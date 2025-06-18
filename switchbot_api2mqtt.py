@@ -9,25 +9,25 @@ import hashlib
 import base64
 import requests
 import paho.mqtt.client as mqtt
+import importlib.metadata
 from threading import Thread
 from dotenv import load_dotenv
 
-_VERSION = "0.1"
+_VERSION = "0.2"
 
-load_dotenv() 
+load_dotenv()
 log_file = os.getenv("LOG_FILE", "/logs/switchbot_api2mqtt.log")
-# --- Logging ---
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),  
-        logging.FileHandler(log_file, encoding='utf-8') 
+        logging.StreamHandler(),
+        logging.FileHandler(log_file, encoding='utf-8')
     ]
 )
 logger = logging.getLogger("switchbot-api2mqtt")
 
-# --- Configurazioni ---
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME")
@@ -35,11 +35,11 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "switchbot_api2mqtt")
 MQTT_TOPIC_COMMAND = os.getenv("MQTT_TOPIC_COMMAND", "switchbot/lock/cmd")
 MQTT_TOPIC_STATUS = os.getenv("MQTT_TOPIC_STATUS", "switchbot/lock/status")
+MQTT_TOPIC_RESPONSE = os.getenv("MQTT_TOPIC_RESPONSE", "switchbot/lock/response")
 SWITCHBOT_TOKEN = os.getenv("SWITCHBOT_TOKEN")
 SWITCHBOT_SECRET = os.getenv("SWITCHBOT_SECRET")
-SWITCHBOT_DEVICE_ID = os.getenv("SWITCHBOT_DEVICE_ID")
+API_BASEURL = os.getenv("API_BASEURL", "https://api.switch-bot.com/v1.1/")
 
-# --- Funzione per generare headers autenticati ---
 def generate_headers():
     t = str(int(time.time() * 1000))
     nonce = str(uuid.uuid4())
@@ -54,76 +54,62 @@ def generate_headers():
         "Content-Type": "application/json; charset=utf8"
     }
 
-# --- Funzioni per SwitchBot ---
-def get_lock_status():
-    logger.info(f"Get Status")
-    url = f"https://api.switch-bot.com/v1.1/devices/{SWITCHBOT_DEVICE_ID}/status"
+def post(service_url, payload):
+    url = f"{API_BASEURL}{service_url}"
     headers = generate_headers()
-    try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        if data.get("message") == "success":
-            return data.get("body")
-    except Exception as e:
-        logger.error(f"Error getting status: {e}")
-    return None
-    
-def get_devices():
-    url = f"https://api.switch-bot.com/v1.1/devices"
-    headers = generate_headers()
-    try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        if data.get("message") == "success":
-            return data.get("body")
-    except Exception as e:
-        logger.error(f"Error getting devices: {e}")
-    return None
-
-def send_command(command):
-    url = f"https://api.switch-bot.com/v1.1/devices/{SWITCHBOT_DEVICE_ID}/commands"
-    headers = generate_headers()
-    payload = {
-        "command": command,
-        "parameter": "default",
-        "commandType": "command"
-    }
+    logger.info(f"Call POST {url}")
+    logger.debug(f"Payload {payload}")
+    logger.debug(f"headers {headers}")
     try:
         response = requests.post(url, headers=headers, json=payload)
-        logger.info(f"Response {response}")
-        return response.status_code == 200
+        logger.debug(f"Response {response}")
+        return response
     except Exception as e:
-        logger.error(f"Error send command: {e}")
+        logger.error(f"Error sending POST request: {e}")
         return False
 
-# --- MQTT Handlers ---
+def get(service_url):
+    url = f"{API_BASEURL}{service_url}"
+    headers = generate_headers()
+    logger.info(f"Call GET {url}")
+    logger.debug(f"headers {headers}")
+    try:
+        response = requests.get(url, headers=headers)
+        logger.debug(f"Response {response}")
+        return response
+    except Exception as e:
+        logger.error(f"Error sending GET request: {e}")
+        return False
+
 def on_connect(client, userdata, flags, rc, properties=None):
-    logger.info(f"MQTT connection successfully")
+    logger.info(f"MQTT connection successfully ({rc})")
     client.subscribe(MQTT_TOPIC_COMMAND)
 
 def on_message(client, userdata, msg):
-    command = msg.payload.decode().strip().lower()
-    logger.info(f"Command {command}")
-    if command in ["lock", "unlock"]:
-        success = send_command(command)
-        if not success:
-            logger.error("Error executing command")
-    elif command == "devices":
-        res = get_devices()
-        client.publish(MQTT_TOPIC_STATUS, json.dumps(res))
-    elif command == "status":
-        res = get_lock_status()
-        client.publish(MQTT_TOPIC_STATUS, json.dumps(res))
+    try:
+        payload = msg.payload.decode('utf-8')
+        data = json.loads(payload)
+        method = data.get("method")
+        service = data.get("service")
+        logger.info(f"method {method}")
+        logger.info(f"service {service}")
+        res = None
+        if service and method == "get":
+            res = get(service)
+        elif service and method == "post":
+            res = post(service, data.get("payload"))
+        else:
+            logger.error(f"Invalid payload")
+        if res is not None:
+            if res.status_code == 200:
+                client.publish(MQTT_TOPIC_RESPONSE, json.dumps(res.json()))
+            else:
+                logger.error("Invalid response {res}")
+    except json.JSONDecodeError as jsonerror:
+        logger.error("Invalid JSON message: {jsonerror}")
+    except Exception as e:
+        logger.error(f"Generic error: {e}")
 
-# --- Thread per aggiornamento stato periodico ---
-def poll_status_loop(client):
-    while True:
-        status = get_lock_status()
-        if status:
-            client.publish(MQTT_TOPIC_STATUS, json.dumps(status))
-        time.sleep(60)  # ogni minuto
-
-# --- Main ---
 if __name__ == "__main__":
     logger.info(f"START version {_VERSION}")
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, MQTT_CLIENT_ID)
@@ -137,10 +123,7 @@ if __name__ == "__main__":
         logger.error(f"MQTT Connection error: {e}")
         exit()
     
-    poller = Thread(target=poll_status_loop, args=(mqtt_client,), daemon=True)
-    poller.start()
-    
-    logger.info("Waiting for messages... CTRL+C to exit.")
+    logger.info("Waiting for messages...")
     try:
         mqtt_client.loop_forever()
     except KeyboardInterrupt:
