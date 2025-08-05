@@ -9,7 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY switchbot_api2mqtt.py .
+COPY http_utils.py .
 COPY .env .
+COPY logging.json .
 
 # Default command
 CMD ["python", "switchbot_api2mqtt.py"]

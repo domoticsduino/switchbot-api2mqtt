@@ -2,7 +2,7 @@ services:
   switchbot-proxy:
     build: .
     container_name: switchbot_api2mqtt
-    restart: no
+    restart: always
     env_file:
       - .env
     network_mode: host

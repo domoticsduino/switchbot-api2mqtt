@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "formatters": {
+    "standard": {
+      "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "formatter": "standard",
+      "level": "DEBUG"
+    },
+    "file": {
+      "class": "logging.FileHandler",
+      "formatter": "standard",
+      "level": "DEBUG",
+      "filename": "/logs/switchbot_api2mqtt.log"
+    }
+  },
+  "loggers": {
+    "switchbot_api2mqtt": {
+      "handlers": ["console", "file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "http_utils": {
+      "handlers": ["console", "file"],
+      "level": "INFO",
+      "propagate": false
+    }
+  },
+  "root": {
+    "level": "INFO",
+    "handlers": ["console", "file"]
+  }
+}
